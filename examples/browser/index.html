@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>realtime-channels · AppSync Events browser example</title>
+<style>
+  :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
+  body { margin: 0; padding: 24px; max-width: 900px; margin-inline: auto; line-height: 1.45; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  p.sub { margin: 0 0 20px; opacity: .7; }
+  form { display: grid; grid-template-columns: 160px 1fr; gap: 8px 12px; align-items: center; }
+  label { font-size: 13px; opacity: .8; }
+  input, textarea, button { font: inherit; padding: 6px 8px; }
+  textarea { grid-column: 2; min-height: 64px; }
+  .row { grid-column: 2; display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+  .status { padding: 2px 10px; border-radius: 999px; font-size: 12px; border: 1px solid currentColor; }
+  .status[data-s="open"] { color: #0b8a5a; }
+  .status[data-s="reconnecting"], .status[data-s="connecting"] { color: #b7791f; }
+  .status[data-s="closed"], .status[data-s="idle"] { color: #b4372f; }
+  #log { margin-top: 20px; border: 1px solid #8884; border-radius: 6px; padding: 10px; height: 360px; overflow: auto;
+         font: 12.5px/1.5 ui-monospace, Menlo, Consolas, monospace; white-space: pre-wrap; }
+  .evt { color: #0b8a5a; } .err { color: #b4372f; } .sys { opacity: .7; }
+</style>
+</head>
+<body>
+<h1>realtime-channels · AppSync Events</h1>
+<p class="sub">Subscribe-only browser example. Build the library first (<code>pnpm build</code>) so <code>dist/realtime-channels.appsync.global.js</code> exists, then open this file.</p>
+
+<form id="f" onsubmit="return false">
+  <label>HTTP domain</label>
+  <input id="httpDomain" placeholder="your-api-id.appsync-api.<region>.amazonaws.com (or your custom domain)" />
+  <label>Auth mode</label>
+  <select id="mode">
+    <option value="cognito">Cognito user pool (ID token)</option>
+    <option value="lambda">Lambda authorizer (custom token)</option>
+    <option value="apiKey">API key</option>
+  </select>
+  <label>Token / key</label>
+  <textarea id="token" placeholder="Paste the Cognito ID token (or custom token / API key)"></textarea>
+  <label>Channel</label>
+  <input id="channel" placeholder="users/<sub> — filled from the token's sub claim when possible" />
+  <div class="row">
+    <button id="connect">Connect &amp; subscribe</button>
+    <button id="extra" type="button" title="Try a channel you should NOT have access to">Subscribe users/aaa (expect error)</button>
+    <button id="close" type="button">Close</button>
+    <span class="status" id="status" data-s="idle">idle</span>
+    <span id="exp" class="sys"></span>
+  </div>
+</form>
+
+<div id="log"></div>
+
+<script src="../../dist/realtime-channels.appsync.global.js"></script>
+<script>
+  const { createClient, appSyncEvents, cognitoUserPool, lambdaAuthorizer, apiKey } = RealtimeChannels;
+  const $ = (id) => document.getElementById(id);
+  const log = (text, cls = 'sys') => {
+    const line = document.createElement('div');
+    line.className = cls;
+    line.textContent = `${new Date().toISOString().slice(11, 23)}  ${text}`;
+    $('log').prepend(line);
+  };
+
+  function decodeJwt(token) {
+    try {
+      const payload = token.split('.')[1].replace(/-/g, '+').replace(/_/g, '/');
+      return JSON.parse(atob(payload));
+    } catch { return null; }
+  }
+
+  $('token').addEventListener('input', () => {
+    const claims = decodeJwt($('token').value.trim());
+    if (claims?.sub && !$('channel').value) $('channel').value = `users/${claims.sub}`;
+    if (claims?.exp) {
+      const ms = claims.exp * 1000 - Date.now();
+      $('exp').textContent = ms > 0 ? `token expires in ${Math.round(ms / 60000)} min` : 'token EXPIRED';
+    }
+  });
+
+  let client = null;
+
+  function buildClient() {
+    const getToken = () => $('token').value.trim();
+    const mode = $('mode').value;
+    const auth = mode === 'cognito' ? cognitoUserPool(getToken)
+               : mode === 'lambda' ? lambdaAuthorizer(getToken)
+               : apiKey(getToken());
+    const c = createClient(appSyncEvents({ httpDomain: $('httpDomain').value.trim(), auth }), {
+      logger: (level, message, data) => { if (level !== 'debug') log(`[${level}] ${message}${data ? ' ' + safe(data) : ''}`); },
+    });
+    c.onStatus((s, info) => { $('status').dataset.s = s; $('status').textContent = s; log(`status → ${s}${info ? ' ' + safe(info) : ''}`); });
+    c.onError((e) => log(`error ${e.code}: ${e.message}`, 'err'));
+    return c;
+  }
+
+  const safe = (v) => { try { return JSON.stringify(v, (k, x) => (x instanceof Error ? x.message : x)); } catch { return String(v); } };
+
+  function subscribeTo(channel) {
+    const sub = client.subscribe(channel, (event) => {
+      let latency = '';
+      const sent = event && (event.sentAtUtc || event.sentAt);
+      if (sent) { const ms = Date.now() - Date.parse(sent); if (!Number.isNaN(ms)) latency = `  (latency ${ms} ms)`; }
+      log(`event on ${channel}: ${safe(event)}${latency}`, 'evt');
+    }, { onError: (e) => log(`subscription error on ${channel}: ${e.code} ${e.message}`, 'err') });
+    sub.ready.then(() => log(`subscribed to ${channel}`)).catch((e) => log(`subscribe to ${channel} rejected: ${e.code}`, 'err'));
+    return sub;
+  }
+
+  $('connect').addEventListener('click', () => {
+    if (!$('httpDomain').value.trim()) { log('enter the Event API HTTP domain first', 'err'); return; }
+    if (!$('channel').value.trim()) { log('enter a channel first', 'err'); return; }
+    if (client) client.close();
+    client = buildClient();
+    subscribeTo($('channel').value.trim());
+  });
+  $('extra').addEventListener('click', () => { if (!client) client = buildClient(); subscribeTo('users/aaa'); });
+  $('close').addEventListener('click', () => { client?.close(); });
+
+  log('ready. Paste a token, check the channel, press Connect. Publish from your backend (IAM) to see events here.');
+</script>
+</body>
+</html>

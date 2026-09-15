@@ -1,0 +1,99 @@
+{
+  "name": "realtime-channels",
+  "version": "0.1.0",
+  "description": "Tiny, dependency-free realtime channel client with pluggable transports. Ships an AWS AppSync Events adapter that runs unchanged in browsers, React Native (including Expo Go) and Node.",
+  "license": "MIT",
+  "author": "Nikos Pnevmatikos",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/NikPnevmatikos/realtime-channels.git"
+  },
+  "homepage": "https://github.com/NikPnevmatikos/realtime-channels#readme",
+  "bugs": "https://github.com/NikPnevmatikos/realtime-channels/issues",
+  "keywords": [
+    "realtime",
+    "websocket",
+    "pubsub",
+    "channels",
+    "appsync",
+    "appsync-events",
+    "aws",
+    "react",
+    "react-native",
+    "expo"
+  ],
+  "type": "module",
+  "sideEffects": false,
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    },
+    "./appsync-events": {
+      "import": {
+        "types": "./dist/appsync-events.d.ts",
+        "default": "./dist/appsync-events.js"
+      },
+      "require": {
+        "types": "./dist/appsync-events.d.cts",
+        "default": "./dist/appsync-events.cjs"
+      }
+    },
+    "./react": {
+      "import": {
+        "types": "./dist/react.d.ts",
+        "default": "./dist/react.js"
+      },
+      "require": {
+        "types": "./dist/react.d.cts",
+        "default": "./dist/react.cjs"
+      }
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "CHANGELOG.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit",
+    "check": "pnpm typecheck && pnpm test && pnpm build",
+    "prepublishOnly": "pnpm check"
+  },
+  "peerDependencies": {
+    "react": ">=18"
+  },
+  "peerDependenciesMeta": {
+    "react": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/react": "^19.0.0",
+    "react": "^19.0.0",
+    "tsup": "^8.0.0",
+    "typescript": "^5.5.0",
+    "vitest": "^3.0.0"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
