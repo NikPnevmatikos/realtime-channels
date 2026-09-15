@@ -32,6 +32,16 @@ jobs:
           TAG="${GITHUB_REF_NAME#v}"
           VERSION="$(node -p "require('./package.json').version")"
           test "$TAG" = "$VERSION" || { echo "tag $TAG != package.json $VERSION"; exit 1; }
-      - run: pnpm publish --access public --no-git-checks --provenance
+      - name: Skip if this version is already on npm (e.g. published manually)
+        id: exists
+        run: |
+          VERSION="$(node -p "require('./package.json').version")"
+          if npm view "realtime-channels@$VERSION" version >/dev/null 2>&1; then
+            echo "already published: $VERSION"; echo "skip=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+      - if: steps.exists.outputs.skip == 'false'
+        run: pnpm publish --access public --no-git-checks --provenance
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
