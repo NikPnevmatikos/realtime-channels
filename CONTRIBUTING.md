@@ -17,7 +17,7 @@ pnpm test           # vitest against in-memory fakes; no cloud account needed
 pnpm build          # dist/ (ESM, CJS, d.ts) + browser bundle used by examples/browser
 ```
 
-Node 20+ (CI runs 20, 22 and 24). On Node < 22 tests inject a fake `WebSocket`, so nothing else is required.
+Node 22+ for development (pnpm 11 requires it); CI runs 22 and 24. The published library runs on Node 20+ when you pass a `WebSocket` implementation, and on Node 22+ with the global one.
 
 ## Adding a transport adapter
 
