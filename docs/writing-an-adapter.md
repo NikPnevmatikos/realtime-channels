@@ -37,18 +37,19 @@ interface AdapterConnection {
 
 ## Rules the core relies on
 
-1. **`connect()` resolves only when subscriptions can be accepted.** If the handshake fails, reject with a `RealtimeError` (`CONNECT_FAILED`, `CONNECT_TIMEOUT`, `CONNECTION_ERROR`, `AUTH_ERROR`). The core schedules the retry.
+1. **`connect()` resolves only when subscriptions can be accepted, and always settles.** If the handshake fails, reject with a `RealtimeError` (`CONNECT_FAILED`, `CONNECT_TIMEOUT`, `CONNECTION_ERROR`, `AUTH_ERROR`) and the core schedules the retry. Bound every step with a timeout, the token fetch included: a `connect()` that never settles leaves the client in `connecting` forever. Reject with `CONNECTION_REJECTED` only when the server refused for good and retrying is pointless; the core then moves to `closed` and stops.
 2. **`onClose` fires exactly once per established connection, and never for a connection whose `connect()` rejected.** Otherwise the core schedules two reconnects for one failure. Keep an `established` flag: set it when you resolve `connect()`, and only call `onClose` when it is true.
-3. **`onClose({ intentional })`**: `true` when the close came from `connection.close()`, `false` for anything else (network, server, watchdog). The core reconnects only when `intentional` is `false`.
-4. **`subscribe()` resolves on the server's acknowledgement** (or immediately, if the transport has no ack). Reject with:
-   - `SUBSCRIBE_REJECTED` when the server refused (authorization, unknown channel). The core will **not** retry that channel on reconnect and will reject `Subscription.ready`.
-   - `SUBSCRIBE_TIMEOUT` / `CONNECTION_CLOSED` for transient failures. The core keeps the channel and retries after reconnect.
+3. **`onClose({ intentional })`**: `true` when the close came from `connection.close()`, `false` for anything else (network, server, watchdog). The core reconnects only when `intentional` is `false`, unless `error` is a `RealtimeError` with code `CONNECTION_REJECTED`: use that when the server closed the connection and said not to come back (SignalR's `Close` message without `allowReconnect`, for example).
+4. **`subscribe()` resolves on the server's acknowledgement** (or immediately, if the transport has no ack). The core calls it at most once per channel per connection and fans events out to its own subscribers, so the adapter needs no reference counting. Reject with:
+   - `SUBSCRIBE_REJECTED` when the server refused (authorization, unknown channel). The core will **not** retry that channel and will reject `Subscription.ready`.
+   - any other code (`SUBSCRIBE_TIMEOUT`, `AUTH_ERROR`, `CONNECTION_CLOSED`, …) for transient failures. The core retries with backoff on the same connection, or after the reconnect when the connection is gone.
 5. **Deliver parsed events.** If your wire format is JSON strings, parse them and pass the value to `onEvent`. Pass what you receive if it is not JSON.
 6. **`unsubscribe()` must be safe** to call after the connection died. Check the socket state before sending.
 7. **Auth is fetched per operation.** If the transport authenticates on connect and again per subscribe (as AppSync does), call the user's token provider each time; that is how refreshed tokens propagate. Wrap provider failures in `RealtimeError('…', 'AUTH_ERROR', cause)`.
-8. **No timers left behind.** Clear every timeout in your close path. The test suite runs with fake timers and will hang on leaks.
-9. **No dependencies.** The package ships with zero runtime dependencies. Wrapping an official SDK (Ably, Centrifugo, Socket.IO) is welcome, but the SDK must be an **optional peer dependency** imported only inside that adapter's entry point.
-10. **Structural types for platform objects.** Do not import DOM or Node types into the public surface; accept a `WebSocket`/`EventSource` constructor via options with a structural type, like the AppSync adapter's `WebSocketLike`.
+8. **Settle in-flight operations when the connection closes.** Reject pending `subscribe()` and `publish()` calls with `CONNECTION_CLOSED`, and check the connection again after every `await` (a token fetch, for example): an operation must never start on a closed socket, nor wait for its timeout to find out.
+9. **No timers left behind.** Clear every timeout in your close path. The test suite runs with fake timers and will hang on leaks.
+10. **No dependencies.** The package ships with zero runtime dependencies. Wrapping an official SDK (Ably, Centrifugo, Socket.IO) is welcome, but the SDK must be an **optional peer dependency** imported only inside that adapter's entry point.
+11. **Structural types for platform objects.** Do not import DOM or Node types into the public surface; accept a `WebSocket`/`EventSource` constructor via options with a structural type, like the AppSync adapter's `WebSocketLike`.
 
 ## Skeleton: plain WebSocket with a JSON envelope
 
@@ -71,7 +72,8 @@ export function jsonWebSocket(opts: JsonWebSocketOptions): Adapter {
     connect(handlers) {
       return new Promise<AdapterConnection>((resolve, reject) => {
         const ws = new WS(opts.url);
-        const handlersByChannel = new Map<string, Set<(e: unknown) => void>>();
+        // One handler per channel: the core subscribes once per channel and fans out itself.
+        const handlersByChannel = new Map<string, (e: unknown) => void>();
         let established = false;
         let intentional = false;
 
@@ -81,13 +83,11 @@ export function jsonWebSocket(opts: JsonWebSocketOptions): Adapter {
           resolve({
             async subscribe(channel, onEvent) {
               ws.send(JSON.stringify({ type: 'subscribe', channel }));
-              const set = handlersByChannel.get(channel) ?? new Set();
-              set.add(onEvent);
-              handlersByChannel.set(channel, set);
+              handlersByChannel.set(channel, onEvent);
               return {
                 unsubscribe() {
-                  set.delete(onEvent);
-                  if (set.size === 0 && ws.readyState === 1) ws.send(JSON.stringify({ type: 'unsubscribe', channel }));
+                  handlersByChannel.delete(channel);
+                  if (ws.readyState === 1) ws.send(JSON.stringify({ type: 'unsubscribe', channel }));
                 },
               };
             },
@@ -99,7 +99,7 @@ export function jsonWebSocket(opts: JsonWebSocketOptions): Adapter {
         };
         ws.onmessage = (ev: { data: string }) => {
           const msg = JSON.parse(ev.data);
-          if (msg.type === 'event') for (const h of handlersByChannel.get(msg.channel) ?? []) h(msg.data);
+          if (msg.type === 'event') handlersByChannel.get(msg.channel)?.(msg.data);
         };
         ws.onclose = (ev: { code?: number; reason?: string }) => {
           if (!established) return reject(new RealtimeError('closed before open', 'CONNECT_FAILED', ev));
@@ -147,5 +147,7 @@ The behaviours every adapter test file should cover:
 - `close()` → `onClose({ intentional: true })`, no reconnect
 - keep-alive or liveness timeout (if the protocol has one)
 - token provider is called for every connection (and every subscribe, if applicable)
+- the connection drops while an operation waits for its token: nothing is sent, the operation rejects with `CONNECTION_CLOSED` at once, no timer is left behind
+- a token provider that never answers: `connect()` and `subscribe()` still settle within their timeouts
 
 A real-service smoke test (like `examples/browser`) is welcome as an example, not as a test.

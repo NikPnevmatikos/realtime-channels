@@ -23,10 +23,11 @@
 
 The contract is in [docs/writing-an-adapter.md](../docs/writing-an-adapter.md). Confirm each point:
 
-- [ ] `connect()` resolves only when subscriptions can be accepted; failures reject with a `RealtimeError`
+- [ ] `connect()` resolves only when subscriptions can be accepted; failures reject with a `RealtimeError`; every step (token fetch included) has a timeout
 - [ ] `handlers.onClose()` is called **exactly once per established connection** and **never** for a connection whose `connect()` rejected
-- [ ] `onClose({ intentional: true })` only when `connection.close()` was called
+- [ ] `onClose({ intentional: true })` only when `connection.close()` was called; `CONNECTION_REJECTED` only when the server said not to come back
 - [ ] `subscribe()` rejects refused channels with code `SUBSCRIBE_REJECTED`; transient failures use `SUBSCRIBE_TIMEOUT` / `CONNECTION_CLOSED`
+- [ ] In-flight operations reject with `CONNECTION_CLOSED` when the connection closes, including ones still waiting for a token
 - [ ] Events are delivered parsed (JSON strings decoded)
 - [ ] The token provider is called for every connection (and per subscribe where the protocol re-authorizes)
 - [ ] All timers are cleared on close; `unsubscribe()` is safe after the connection died

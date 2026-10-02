@@ -30,8 +30,8 @@ client.subscribe(`users/${currentUserId}`, (event) => console.log(event));
 - **Zero runtime dependencies.** A few KB minified. Nothing to audit but this repo.
 - **One code path everywhere.** Browser, React Native and Node use the same client on the platform's own `WebSocket`. No native modules, so it works in Expo Go.
 - **Bring your own auth.** Pass a function that returns the current token. It is called for every connection and every subscription, so refreshed credentials propagate on their own. No opinion about where you keep tokens.
-- **Reconnects properly.** Jittered exponential backoff, every channel re-subscribed, keep-alive watchdog for silent connections, channels the server refused are not retried in a loop.
-- **Transport-agnostic core.** The AppSync adapter is ~300 lines against a small `Adapter` interface. Other transports plug into the same client, hooks and tests. See [Adapters](#adapters).
+- **Reconnects properly.** Jittered exponential backoff, every channel re-subscribed, keep-alive watchdog for silent connections, failed subscribes retried, channels the server refused not retried in a loop, and a signal when you may have missed events.
+- **Transport-agnostic core.** The AppSync adapter is a few hundred lines against a small `Adapter` interface. Other transports plug into the same client, hooks and tests. See [Adapters](#adapters).
 
 If you use Amplify already and keep your tokens in Amplify Auth, the official `events` client is a fine choice. This library exists for everyone else.
 
@@ -51,11 +51,27 @@ const sub = client.subscribe('users/42', (event, meta) => {
   console.log(event, meta.channel, meta.receivedAt);
 });
 
-await sub.ready;      // optional: resolves on the server's ack, rejects if refused
+await sub.ready;      // optional: resolves on the server's ack, rejects only if the server refused
+sub.status;           // 'pending' | 'active' | 'rejected' | 'unsubscribed'
+sub.onStatus((status, error) => …);
 sub.unsubscribe();
 ```
 
 The first `subscribe()` opens the connection (`autoConnect: true`). Call `client.connect()` yourself to control timing, `client.close()` to stop; subscriptions survive a `close()` and resume on the next `connect()`.
+
+Subscribers of the same channel share one server subscription, closed when the last one unsubscribes. A subscribe that fails on a live connection (a timeout, a token provider error) is retried with backoff; one the server refuses (`SUBSCRIBE_REJECTED`) is not.
+
+### Missed events
+
+Events sent while a subscription is down, during a reconnect for example, are not replayed: not by this client, not by AppSync Events. `onActive` runs every time a subscription becomes active, with `resumed: true` after such a gap. That is the moment to refetch whatever you show from the channel.
+
+```ts
+client.subscribe('users/42', onNotification, {
+  onActive: ({ resumed }) => {
+    if (resumed) refetchNotifications();
+  },
+});
+```
 
 ### Status and errors
 
@@ -65,8 +81,9 @@ client.onError((error) => …);    // RealtimeError with a stable `code`
 ```
 
 Error codes you will branch on: `SUBSCRIBE_REJECTED` (authorization rule said no),
-`KEEPALIVE_TIMEOUT`, `CONNECT_TIMEOUT`, `AUTH_ERROR` (your token provider threw),
-`RECONNECT_GIVE_UP` (only with `maxReconnectAttempts`), `HANDLER_ERROR` (your handler threw; the subscription stays alive).
+`KEEPALIVE_TIMEOUT`, `CONNECT_TIMEOUT`, `AUTH_ERROR` (your token provider threw or did not answer in time),
+`RECONNECT_GIVE_UP` (only with `maxReconnectAttempts`), `CONNECTION_REJECTED` (the server refused the connection for good, so the client stops reconnecting; only from transports that can say so),
+`HANDLER_ERROR` (your handler or `onActive` threw; the subscription stays alive).
 
 ### React
 
@@ -78,15 +95,15 @@ import { RealtimeProvider, useChannel, useConnectionStatus } from 'realtime-chan
 </RealtimeProvider>;
 
 function Bell({ userId }: { userId: string }) {
-  const status = useConnectionStatus();
-  useChannel(`users/${userId}`, (event) => {
-    queryClient.invalidateQueries({ queryKey: ['notifications'] });
+  const refresh = () => queryClient.invalidateQueries({ queryKey: ['notifications'] });
+  const { status } = useChannel(`users/${userId}`, refresh, {
+    onActive: ({ resumed }) => resumed && refresh(), // refetch after a gap
   });
-  return <span data-status={status} />;
+  return <span data-live={status === 'active'} />;
 }
 ```
 
-`useChannel(null, …)` pauses the subscription while an id is loading. The latest handler is always used; changing it does not resubscribe.
+`useChannel` returns `{ status, error }`: `idle` while the channel is `null`, then `pending`, `active` or `rejected` (with the server's `error`). `useChannel(null, …)` pauses the subscription while an id is loading. The latest handler is always used; changing it does not resubscribe. `useConnectionStatus()` returns the client's status.
 
 ### React Native / Expo
 
@@ -132,9 +149,9 @@ Adapters are small: implement `connect()` returning a connection with `subscribe
 | `realtimeDomain` | derived | override for custom domains |
 | `auth` | required | see below |
 | `WebSocket` | `globalThis.WebSocket` | implementation to use |
-| `connectTimeoutMs` | `10000` | wait for `connection_ack` |
-| `subscribeTimeoutMs` | `10000` | wait for `subscribe_success` |
-| `publishTimeoutMs` | `10000` | wait for `publish_success` |
+| `connectTimeoutMs` | `10000` | wait for the token provider and `connection_ack` |
+| `subscribeTimeoutMs` | `10000` | wait for the token provider and `subscribe_success` |
+| `publishTimeoutMs` | `10000` | wait for the token provider and `publish_success` |
 | `keepAliveTimeoutMs` | from server (5 min) | close when silent longer than this |
 
 Authorization helpers, all sending the header the AppSync docs specify:
@@ -154,7 +171,7 @@ The adapter speaks the documented `aws-appsync-event-ws` protocol: authorization
 | Option | Default | Meaning |
 | --- | --- | --- |
 | `autoConnect` | `true` | first `subscribe()` connects |
-| `backoff.initialMs` | `500` | first retry delay |
+| `backoff.initialMs` | `500` | first retry delay (reconnects and failed subscribes) |
 | `backoff.maxMs` | `30000` | cap per delay |
 | `backoff.factor` | `2` | growth per attempt |
 | `backoff.jitter` | `0.5` | ±25 % randomisation |

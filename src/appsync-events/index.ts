@@ -22,11 +22,11 @@ export interface AppSyncEventsOptions {
   auth: AppSyncAuth;
   /** WebSocket implementation. Defaults to `globalThis.WebSocket` (browsers, React Native, Node ≥ 22). */
   WebSocket?: WebSocketConstructor;
-  /** How long to wait for `connection_ack`. Default 10 000 ms. */
+  /** How long to wait for the token provider and `connection_ack` together. Default 10 000 ms. */
   connectTimeoutMs?: number;
-  /** How long to wait for `subscribe_success`. Default 10 000 ms. */
+  /** How long to wait for the token provider and `subscribe_success` together. Default 10 000 ms. */
   subscribeTimeoutMs?: number;
-  /** How long to wait for `publish_success`. Default 10 000 ms. */
+  /** How long to wait for the token provider and `publish_success` together. Default 10 000 ms. */
   publishTimeoutMs?: number;
   /**
    * Close the connection when no server message arrives within this window.

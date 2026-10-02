@@ -131,10 +131,11 @@ export default function App() {
   };
 
   // Reconnect when the app returns to the foreground; the OS drops sockets in the background.
+  // connect() also skips whatever is left of a reconnect backoff, so call it unless already open.
   useEffect(() => {
     if (!client) return;
     const sub = AppState.addEventListener('change', (state) => {
-      if (state === 'active' && client.status === 'closed') {
+      if (state === 'active' && client.status !== 'open') {
         append('sys', 'app active again → reconnecting');
         client.connect().catch(() => {});
       }

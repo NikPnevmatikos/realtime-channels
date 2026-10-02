@@ -49,6 +49,9 @@ const WS_OPEN = 1;
 const CLOSE_KEEPALIVE_TIMEOUT = 4000;
 
 interface Pending {
+  kind: 'subscribe' | 'publish';
+  /** The request went out. Until then it is waiting for the auth provider. */
+  sent: boolean;
   timer: ReturnType<typeof setTimeout>;
   resolve: (message: ServerMessage) => void;
   reject: (error: RealtimeError) => void;
@@ -104,6 +107,27 @@ async function authorization(cfg: ResolvedConfig): Promise<Record<string, string
   return { host: cfg.httpDomain, ...headers };
 }
 
+function authTimeout(ms: number): RealtimeError {
+  return new RealtimeError(`AppSync auth provider did not answer within ${ms} ms`, 'AUTH_ERROR');
+}
+
+/** Rejects with `onTimeout()` when `promise` has not settled after `ms`. */
+function withTimeout<T>(promise: Promise<T>, ms: number, onTimeout: () => RealtimeError): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(onTimeout()), ms);
+    promise.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (err: unknown) => {
+        clearTimeout(timer);
+        reject(err);
+      },
+    );
+  });
+}
+
 /**
  * Opens one WebSocket to the AppSync Events realtime endpoint and speaks the
  * `aws-appsync-event-ws` protocol on it. Resolves after `connection_ack`.
@@ -112,7 +136,9 @@ export async function openAppSyncConnection(
   cfg: ResolvedConfig,
   handlers: AdapterConnectHandlers,
 ): Promise<AdapterConnection> {
-  const authObject = await authorization(cfg);
+  // One deadline for the whole connect, token provider included, so a hanging provider cannot stall the client.
+  const startedAt = Date.now();
+  const authObject = await withTimeout(authorization(cfg), cfg.connectTimeoutMs, () => authTimeout(cfg.connectTimeoutMs));
   const protocols = ['aws-appsync-event-ws', `header-${base64UrlEncode(JSON.stringify(authObject))}`];
   const url = `wss://${cfg.realtimeDomain}/event/realtime`;
 
@@ -128,12 +154,16 @@ export async function openAppSyncConnection(
     let settled = false;
     /** connection_ack was received; from here on closes are reported through handlers.onClose. */
     let established = false;
+    /** The socket closed; every later operation fails fast. */
+    let closed = false;
     let intentionalClose = false;
     let lastError: unknown;
     let keepAliveTimeoutMs = cfg.keepAliveTimeoutMs ?? 300_000;
     let keepAliveTimer: ReturnType<typeof setTimeout> | null = null;
     const pending = new Map<string, Pending>();
     const subscriptions = new Map<string, ActiveSubscription>();
+    /** Subscribes that timed out after they were sent. If the server acknowledges one late, undo it. */
+    const abandoned = new Set<string>();
 
     const connectTimer = setTimeout(() => {
       if (settled) return;
@@ -141,7 +171,7 @@ export async function openAppSyncConnection(
       lastError = new RealtimeError('Timed out waiting for connection_ack', 'CONNECT_TIMEOUT');
       safeClose(1000, 'connect timeout');
       rejectConnect(lastError as RealtimeError);
-    }, cfg.connectTimeoutMs);
+    }, Math.max(0, cfg.connectTimeoutMs - (Date.now() - startedAt)));
 
     function safeClose(code?: number, reason?: string): void {
       try {
@@ -175,13 +205,61 @@ export async function openAppSyncConnection(
       for (const p of pending.values()) clearTimeout(p.timer);
     }
 
-    function awaitAck(id: string, timeoutMs: number, timeoutCode: 'SUBSCRIBE_TIMEOUT' | 'PUBLISH_TIMEOUT', what: string) {
+    /**
+     * Sends a subscribe or publish as soon as its auth headers are ready and resolves with the
+     * server's answer. The timeout covers the token provider too. Fails fast on a closed socket,
+     * including one that closes while the token is being fetched.
+     */
+    function request(
+      id: string,
+      kind: Pending['kind'],
+      timeoutMs: number,
+      what: string,
+      build: (auth: Record<string, string>) => unknown,
+    ): Promise<ServerMessage> {
+      const notOpen = () => new RealtimeError(`Cannot ${kind}: connection is not open`, 'CONNECTION_CLOSED');
       return new Promise<ServerMessage>((resolve, reject) => {
-        const timer = setTimeout(() => {
-          pending.delete(id);
-          reject(new RealtimeError(`Timed out waiting for ${what}`, timeoutCode));
-        }, timeoutMs);
-        pending.set(id, { timer, resolve, reject });
+        if (closed || ws.readyState !== WS_OPEN) {
+          reject(notOpen());
+          return;
+        }
+        const entry: Pending = {
+          kind,
+          sent: false,
+          resolve,
+          reject,
+          timer: setTimeout(() => {
+            pending.delete(id);
+            if (!entry.sent) {
+              reject(authTimeout(timeoutMs));
+              return;
+            }
+            if (kind === 'subscribe') abandoned.add(id);
+            reject(
+              new RealtimeError(
+                `Timed out waiting for ${what}`,
+                kind === 'subscribe' ? 'SUBSCRIBE_TIMEOUT' : 'PUBLISH_TIMEOUT',
+              ),
+            );
+          }, timeoutMs),
+        };
+        pending.set(id, entry);
+        authorization(cfg).then(
+          (auth) => {
+            if (pending.get(id) !== entry) return; // timed out, or the socket closed meanwhile
+            if (ws.readyState !== WS_OPEN) {
+              settlePending(id, (p) => p.reject(notOpen())); // closing: do not wait for the close event
+              return;
+            }
+            entry.sent = true;
+            try {
+              send(build(auth));
+            } catch (err) {
+              settlePending(id, (p) => p.reject(new RealtimeError(`Could not send ${kind}`, 'CONNECTION_CLOSED', err)));
+            }
+          },
+          (err: unknown) => settlePending(id, (p) => p.reject(err as RealtimeError)), // AUTH_ERROR from authorization()
+        );
       });
     }
 
@@ -196,19 +274,19 @@ export async function openAppSyncConnection(
 
     const connection: AdapterConnection = {
       async subscribe(channel, onEvent, onError): Promise<AdapterSubscription> {
-        if (ws.readyState !== WS_OPEN) {
-          throw new RealtimeError('Cannot subscribe: connection is not open', 'CONNECTION_CLOSED');
-        }
         const id = randomId();
-        const auth = await authorization(cfg);
-        const ack = awaitAck(id, cfg.subscribeTimeoutMs, 'SUBSCRIBE_TIMEOUT', `subscribe_success on "${channel}"`);
-        send({ type: 'subscribe', id, channel, authorization: auth });
-        await ack;
+        await request(id, 'subscribe', cfg.subscribeTimeoutMs, `subscribe_success on "${channel}"`, (auth) => ({
+          type: 'subscribe',
+          id,
+          channel,
+          authorization: auth,
+        }));
+        if (closed) throw new RealtimeError('Connection closed', 'CONNECTION_CLOSED');
         subscriptions.set(id, { channel, onEvent, onError });
         return {
           unsubscribe(): void {
             if (!subscriptions.delete(id)) return;
-            if (ws.readyState === WS_OPEN) {
+            if (!closed && ws.readyState === WS_OPEN) {
               try {
                 send({ type: 'unsubscribe', id });
               } catch {
@@ -220,23 +298,18 @@ export async function openAppSyncConnection(
       },
 
       async publish(channel, events): Promise<void> {
-        if (ws.readyState !== WS_OPEN) {
-          throw new RealtimeError('Cannot publish: connection is not open', 'CONNECTION_CLOSED');
-        }
         if (events.length === 0 || events.length > 5) {
           throw new RealtimeError('AppSync Events accepts 1 to 5 events per publish', 'PUBLISH_FAILED');
         }
+        const encoded = events.map((e) => (typeof e === 'string' ? e : JSON.stringify(e)));
         const id = randomId();
-        const auth = await authorization(cfg);
-        const ack = awaitAck(id, cfg.publishTimeoutMs, 'PUBLISH_TIMEOUT', `publish_success on "${channel}"`);
-        send({
+        const result = await request(id, 'publish', cfg.publishTimeoutMs, `publish_success on "${channel}"`, (auth) => ({
           type: 'publish',
           id,
           channel,
-          events: events.map((e) => (typeof e === 'string' ? e : JSON.stringify(e))),
+          events: encoded,
           authorization: auth,
-        });
-        const result = await ack;
+        }));
         if (Array.isArray(result.failed) && result.failed.length > 0) {
           throw new RealtimeError(
             `${result.failed.length} of ${events.length} events were rejected by the publish handler`,
@@ -291,11 +364,23 @@ export async function openAppSyncConnection(
         case 'ka':
           break;
         case 'subscribe_success':
+          if (message.id !== undefined && abandoned.delete(message.id)) {
+            // Acknowledged after we gave up on it: undo it so it does not linger on the server.
+            try {
+              send({ type: 'unsubscribe', id: message.id });
+            } catch {
+              /* socket going away */
+            }
+            break;
+          }
+          settlePending(message.id, (p) => p.resolve(message));
+          break;
         case 'publish_success':
         case 'unsubscribe_success':
           settlePending(message.id, (p) => p.resolve(message));
           break;
         case 'subscribe_error':
+          if (message.id !== undefined) abandoned.delete(message.id);
           settlePending(message.id, (p) =>
             p.reject(
               new RealtimeError(describeErrors(message.errors, 'Subscription refused'), 'SUBSCRIBE_REJECTED', message.errors),
@@ -346,6 +431,8 @@ export async function openAppSyncConnection(
     };
 
     ws.onclose = (event: CloseEventLike) => {
+      if (closed) return;
+      closed = true;
       cleanupTimers();
       const closeError = new RealtimeError(
         `Connection closed${event.code !== undefined ? ` (code ${event.code})` : ''}`,
@@ -355,6 +442,7 @@ export async function openAppSyncConnection(
       for (const p of pending.values()) p.reject(closeError);
       pending.clear();
       subscriptions.clear();
+      abandoned.clear();
 
       if (!established) {
         // The connection never became usable: report through the connect() promise only,

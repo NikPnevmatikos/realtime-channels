@@ -101,6 +101,8 @@ export class FakeAppSyncServer {
   acknowledgeConnections = true;
   /** When false the server never answers subscribe messages (to test subscribe timeouts). */
   acknowledgeSubscriptions = true;
+  /** Answer subscribe messages after this delay (to test acknowledgements that arrive after the timeout). */
+  subscribeAckDelayMs = 0;
 
   /** A WebSocket constructor bound to this server instance. */
   readonly WebSocket = ((server: FakeAppSyncServer) =>
@@ -125,17 +127,21 @@ export class FakeAppSyncServer {
         break;
       case 'subscribe': {
         if (!this.acknowledgeSubscriptions) break;
-        const channel = message.channel ?? '';
-        if (this.denyChannels.has(channel)) {
-          socket.serverSend({
-            type: 'subscribe_error',
-            id: message.id,
-            errors: [{ errorType: 'UnauthorizedException', message: 'You are not authorized to make this call.' }],
-          });
-        } else {
-          if (message.id) socket.subscriptions.set(message.id, channel);
-          socket.serverSend({ type: 'subscribe_success', id: message.id });
-        }
+        const answer = (): void => {
+          const channel = message.channel ?? '';
+          if (this.denyChannels.has(channel)) {
+            socket.serverSend({
+              type: 'subscribe_error',
+              id: message.id,
+              errors: [{ errorType: 'UnauthorizedException', message: 'You are not authorized to make this call.' }],
+            });
+          } else {
+            if (message.id) socket.subscriptions.set(message.id, channel);
+            socket.serverSend({ type: 'subscribe_success', id: message.id });
+          }
+        };
+        if (this.subscribeAckDelayMs > 0) setTimeout(answer, this.subscribeAckDelayMs);
+        else answer();
         break;
       }
       case 'unsubscribe':

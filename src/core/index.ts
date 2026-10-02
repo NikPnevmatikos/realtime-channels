@@ -5,6 +5,7 @@ export type { BackoffOptions } from './backoff';
 export { RealtimeError, toRealtimeError } from './errors';
 export type { RealtimeErrorCode } from './errors';
 export type {
+  ActiveInfo,
   Adapter,
   AdapterConnectHandlers,
   AdapterConnection,
@@ -14,4 +15,5 @@ export type {
   EventHandler,
   EventMeta,
   Subscription,
+  SubscriptionStatus,
 } from './types';

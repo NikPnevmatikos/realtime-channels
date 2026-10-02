@@ -231,4 +231,165 @@ describe('appSyncEvents adapter', () => {
       (globalThis as { WebSocket?: unknown }).WebSocket = original;
     }
   });
+
+  it('shares one server subscription between subscribers of the same channel', async () => {
+    const { server, client } = setup();
+    const a: unknown[] = [];
+    const b: unknown[] = [];
+    const subA = client.subscribe('users/abc', (e) => a.push(e));
+    const subB = client.subscribe('users/abc', (e) => b.push(e));
+    await flush(20);
+    await Promise.all([subA.ready, subB.ready]);
+    expect(server.last.sentOfType('subscribe')).toHaveLength(1);
+
+    server.last.emit('users/abc', { n: 1 });
+    expect(a).toEqual([{ n: 1 }]);
+    expect(b).toEqual([{ n: 1 }]);
+
+    subA.unsubscribe();
+    expect(server.last.sentOfType('unsubscribe')).toHaveLength(0);
+    subB.unsubscribe();
+    expect(server.last.sentOfType('unsubscribe')).toHaveLength(1);
+    expect(server.last.subscriptions.size).toBe(0);
+  });
+
+  it('retries a subscribe that timed out on a healthy connection', async () => {
+    const { server, client, errors } = setup();
+    server.acknowledgeSubscriptions = false;
+    const received: unknown[] = [];
+    const sub = client.subscribe('users/abc', (e) => received.push(e));
+    await flush(20);
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(errors.map((e) => e.code)).toEqual(['SUBSCRIBE_TIMEOUT']);
+    expect(sub.status).toBe('pending');
+
+    server.acknowledgeSubscriptions = true;
+    await vi.advanceTimersByTimeAsync(100);
+    await flush(20);
+    await sub.ready;
+    expect(server.sockets).toHaveLength(1);
+    expect(server.last.sentOfType('subscribe')).toHaveLength(2);
+    server.last.emit('users/abc', { n: 1 });
+    expect(received).toEqual([{ n: 1 }]);
+  });
+
+  it('unsubscribes a subscription the server acknowledges after it timed out', async () => {
+    const { server, client } = setup({ subscribeTimeoutMs: 1_000 });
+    server.subscribeAckDelayMs = 5_000;
+    const sub = client.subscribe('users/abc', () => {});
+    await flush(20);
+    await vi.advanceTimersByTimeAsync(1_000); // first subscribe times out
+    server.subscribeAckDelayMs = 0;
+    await vi.advanceTimersByTimeAsync(100); // the retry is acknowledged at once
+    await flush(20);
+    await sub.ready;
+    const [first, second] = server.last.sentOfType('subscribe');
+
+    await vi.advanceTimersByTimeAsync(5_000); // the first subscribe's late ack arrives
+    expect(server.last.sentOfType('unsubscribe').map((m) => m.id)).toEqual([first?.id]);
+    expect([...server.last.subscriptions.keys()]).toEqual([second?.id]);
+  });
+
+  it('keeps ready pending across a drop mid-subscribe and reports no error', async () => {
+    const { server, client, errors } = setup();
+    server.acknowledgeSubscriptions = false;
+    const sub = client.subscribe('users/abc', () => {});
+    await flush(20);
+
+    server.acknowledgeSubscriptions = true;
+    server.last.serverClose(1006, 'network');
+    await vi.advanceTimersByTimeAsync(100);
+    await flush(20);
+    await expect(sub.ready).resolves.toBeUndefined();
+    expect(errors).toEqual([]);
+  });
+
+  it('reconnects when the socket drops while a subscribe is waiting for its token', async () => {
+    const slowToken = () => new Promise<string>((resolve) => setTimeout(() => resolve('token'), 50));
+    const { server, client, errors } = setup({ auth: cognitoUserPool(slowToken) });
+    const received: unknown[] = [];
+    const sub = client.subscribe('users/abc', (e) => received.push(e));
+    await vi.advanceTimersByTimeAsync(50); // the connect's token
+    await flush(20);
+    expect(client.status).toBe('open');
+
+    server.last.serverClose(1006, 'network'); // the subscribe is still fetching its token
+    await vi.advanceTimersByTimeAsync(300);
+    await flush(20);
+    expect(client.status).toBe('open');
+    expect(server.sockets).toHaveLength(2);
+    expect(server.sockets[0]!.sentOfType('subscribe')).toHaveLength(0); // nothing sent on the dead socket
+    await sub.ready;
+
+    server.last.emit('users/abc', { n: 1 });
+    expect(received).toEqual([{ n: 1 }]);
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(errors).toEqual([]);
+  });
+
+  it('sends one subscribe when a status listener subscribes as the connection opens', async () => {
+    const { server, client } = setup();
+    const received: unknown[] = [];
+    let sub: { unsubscribe(): void } | undefined;
+    client.onStatus((s) => {
+      if (s === 'open' && !sub) sub = client.subscribe('users/abc', (e) => received.push(e));
+    });
+    await client.connect();
+    await flush(20);
+    expect(server.last.sentOfType('subscribe')).toHaveLength(1);
+    server.last.emit('users/abc', { n: 1 });
+    expect(received).toHaveLength(1);
+    sub!.unsubscribe();
+    expect(server.last.subscriptions.size).toBe(0);
+  });
+
+  it('fails a publish at once when the socket closes while its token is fetched', async () => {
+    const slowToken = () => new Promise<string>((resolve) => setTimeout(() => resolve('token'), 50));
+    const { server, client } = setup({ auth: cognitoUserPool(slowToken) });
+    const connecting = client.connect();
+    await vi.advanceTimersByTimeAsync(50);
+    await connecting;
+
+    const publishing = client.publish('default/chat', [{ msg: 'hi' }]);
+    publishing.catch(() => {});
+    server.last.serverClose(1006, 'network');
+    await expect(publishing).rejects.toMatchObject({ code: 'CONNECTION_CLOSED' });
+    await vi.advanceTimersByTimeAsync(50);
+    expect(server.sockets[0]!.sentOfType('publish')).toHaveLength(0);
+  });
+
+  it('fails connect with AUTH_ERROR when the token provider hangs past connectTimeoutMs', async () => {
+    const { server, client, errors } = setup({
+      auth: cognitoUserPool(() => new Promise<string>(() => {})),
+      connectTimeoutMs: 1_000,
+    });
+    const attempt = client.connect();
+    attempt.catch(() => {});
+    await vi.advanceTimersByTimeAsync(1_000);
+    await expect(attempt).rejects.toMatchObject({ code: 'AUTH_ERROR' });
+    expect(errors[0]?.code).toBe('AUTH_ERROR');
+    expect(client.status).toBe('reconnecting');
+    expect(server.sockets).toHaveLength(0);
+    client.close();
+  });
+
+  it('fails a subscribe whose token never comes after subscribeTimeoutMs, then retries it', async () => {
+    let calls = 0;
+    const flakyToken = () => {
+      calls += 1;
+      return calls === 2 ? new Promise<string>(() => {}) : `token-${calls}`;
+    };
+    const { server, client, errors } = setup({ auth: cognitoUserPool(flakyToken), subscribeTimeoutMs: 1_000 });
+    const sub = client.subscribe('users/abc', () => {});
+    await flush(20);
+    await vi.advanceTimersByTimeAsync(1_000);
+    expect(errors.map((e) => e.code)).toEqual(['AUTH_ERROR']);
+    expect(server.last.sentOfType('subscribe')).toHaveLength(0);
+
+    await vi.advanceTimersByTimeAsync(100);
+    await flush(20);
+    await sub.ready;
+    expect(server.last.sentOfType('subscribe')).toHaveLength(1);
+    expect(server.sockets).toHaveLength(1);
+  });
 });
