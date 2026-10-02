@@ -1,6 +1,6 @@
 {
   "name": "realtime-channels",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Tiny, dependency-free realtime channel client with pluggable transports. Ships an AWS AppSync Events adapter that runs unchanged in browsers, React Native (including Expo Go) and Node.",
   "license": "MIT",
   "author": "Nikos Pnevmatikos",

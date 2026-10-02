@@ -5,6 +5,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-02
+
 ### Fixed
 
 - The client could stay in `reconnecting` forever when the connection dropped while a subscription was still being set up (for example while the token provider was refreshing). A slow or stuck subscribe can no longer hold up a reconnect.
@@ -40,5 +42,6 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 - Browser bundle (`dist/realtime-channels.appsync.global.js`) and examples for the browser and Expo.
 - Test suite against an in-memory AppSync protocol fake.
 
-[Unreleased]: https://github.com/NikPnevmatikos/realtime-channels/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/NikPnevmatikos/realtime-channels/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/NikPnevmatikos/realtime-channels/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/NikPnevmatikos/realtime-channels/releases/tag/v0.1.0
