@@ -5,6 +5,7 @@ export default defineConfig([
     entry: {
       index: 'src/core/index.ts',
       'appsync-events': 'src/appsync-events/index.ts',
+      signalr: 'src/signalr/index.ts',
       react: 'src/react/index.tsx',
     },
     format: ['esm', 'cjs'],
@@ -12,7 +13,7 @@ export default defineConfig([
     sourcemap: true,
     clean: true,
     target: 'es2020',
-    external: ['react'],
+    external: ['react', '@microsoft/signalr'],
     treeshake: true,
   },
   {

@@ -5,6 +5,10 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+### Added
+
+- SignalR adapter (`realtime-channels/signalr`) for ASP.NET Core SignalR hubs and Azure SignalR Service, built on the official `@microsoft/signalr` client (8.0 or later, an optional peer dependency installed by those who use the adapter). Channels map to hub groups through `Subscribe` / `Unsubscribe` / `Event` (names configurable), publishing goes through `Publish`. The SDK's options (transports with fallback, `withCredentials`, `headers`, `logger`, …) are passed through; its own reconnect stays off so the core reconnects and resubscribes as with every transport, and a `Close` that refuses the client stops it. See [docs/adapters/signalr.md](./docs/adapters/signalr.md).
+
 ## [0.2.0] - 2026-10-02
 
 ### Fixed

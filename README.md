@@ -5,11 +5,12 @@
 [![license](https://img.shields.io/npm/l/realtime-channels.svg)](./LICENSE)
 ![zero dependencies](https://img.shields.io/badge/dependencies-0-brightgreen)
 
-Tiny, dependency-free realtime channel client with pluggable transports.
+Tiny realtime channel client with pluggable transports and a dependency-free core.
 One API for subscribing to channels; adapters do the protocol work.
 
-Ships with an **AWS AppSync Events** adapter that runs unchanged in browsers,
-React Native (including Expo Go) and Node.
+Ships with adapters for **AWS AppSync Events** (no dependencies) and **ASP.NET Core
+SignalR**, including Azure SignalR Service (on top of the official `@microsoft/signalr`
+client). Both run unchanged in browsers, React Native (including Expo Go) and Node.
 
 ```ts
 import { createClient } from 'realtime-channels';
@@ -31,7 +32,7 @@ client.subscribe(`users/${currentUserId}`, (event) => console.log(event));
 - **One code path everywhere.** Browser, React Native and Node use the same client on the platform's own `WebSocket`. No native modules, so it works in Expo Go.
 - **Bring your own auth.** Pass a function that returns the current token. It is called for every connection and every subscription, so refreshed credentials propagate on their own. No opinion about where you keep tokens.
 - **Reconnects properly.** Jittered exponential backoff, every channel re-subscribed, keep-alive watchdog for silent connections, failed subscribes retried, channels the server refused not retried in a loop, and a signal when you may have missed events.
-- **Transport-agnostic core.** The AppSync adapter is a few hundred lines against a small `Adapter` interface. Other transports plug into the same client, hooks and tests. See [Adapters](#adapters).
+- **Transport-agnostic core.** Each adapter is a few hundred lines against a small `Adapter` interface. Other transports plug into the same client, hooks and tests. See [Adapters](#adapters).
 
 If you use Amplify already and keep your tokens in Amplify Auth, the official `events` client is a fine choice. This library exists for everyone else.
 
@@ -40,6 +41,9 @@ If you use Amplify already and keep your tokens in Amplify Auth, the official `e
 ```bash
 npm install realtime-channels
 # pnpm add realtime-channels · yarn add realtime-channels
+
+# for the SignalR adapter, also the official client:
+npm install @microsoft/signalr
 ```
 
 ## Usage
@@ -111,7 +115,7 @@ Nothing extra. See [`examples/expo`](./examples/expo) for a complete screen that
 
 ### Node
 
-Node 22+ has a global `WebSocket`. On older versions pass one in:
+Node 22+ has a global `WebSocket`. On older versions pass one to the AppSync adapter (the SignalR adapter needs nothing: `@microsoft/signalr` brings its own):
 
 ```ts
 import WebSocket from 'ws';
@@ -133,6 +137,7 @@ Most production APIs restrict publishing to the backend; keep clients subscribe-
 | Transport | Import | Status |
 | --- | --- | --- |
 | AWS AppSync Events | `realtime-channels/appsync-events` | ✅ shipped |
+| ASP.NET Core SignalR, Azure SignalR Service | `realtime-channels/signalr` | ✅ shipped |
 | Plain WebSocket (JSON envelope, your own server) | `realtime-channels/websocket` | 🧭 planned, [help wanted](https://github.com/NikPnevmatikos/realtime-channels/issues) |
 | Server-Sent Events (`EventSource`) | `realtime-channels/sse` | 🧭 planned |
 | Azure Web PubSub (`json.webpubsub.azure.v1`) | `realtime-channels/azure-webpubsub` | 🧭 planned |
@@ -165,6 +170,36 @@ Authorization helpers, all sending the header the AppSync docs specify:
 | `customHeaders(async () => headers)` | anything else, e.g. IAM SigV4 signed by your own code |
 
 The adapter speaks the documented `aws-appsync-event-ws` protocol: authorization base64url-encoded into a `header-…` subprotocol on connect, `connection_init` → `connection_ack` (carries the keep-alive timeout), periodic `ka`, `subscribe`/`subscribe_success`/`subscribe_error`, `data`, `unsubscribe`, `publish`.
+
+### SignalR adapter
+
+For a hub that follows a small channel convention: the client joins a channel with `Subscribe(channel)`, leaves it with `Unsubscribe(channel)`, and the hub delivers with `Clients.Group(channel).SendAsync("Event", channel, payload)`. A complete hub in C#, and how to refuse a channel, are in **[docs/adapters/signalr.md](./docs/adapters/signalr.md)**.
+
+```ts
+import { createClient } from 'realtime-channels';
+import { signalR } from 'realtime-channels/signalr';
+
+const client = createClient(signalR({ url: 'https://api.example.com/hubs/events', accessToken: () => getToken() }));
+client.subscribe('orders/42', (event) => console.log(event));
+```
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `url` | required | the hub's URL; a path (`/hubs/events`) works in browsers |
+| `accessToken` | none | token per connection, sent the way the SDK sends it (`Bearer` header, or `access_token` where a browser can't set headers) |
+| `methods` | `Subscribe`, `Unsubscribe`, `Publish`, `Event` | the hub's method names, if yours differ |
+| `transport` | WebSockets, then Server-Sent Events, then long polling | which transports the SDK may use |
+| `withCredentials` | `true` | send cookies cross-origin; set `false` when you authenticate with a token, so the server's CORS policy needs no `AllowCredentials()` |
+| `logger` | `LogLevel.Warning` | the SDK's logger or level; `LogLevel.None` silences it |
+| `connectTimeoutMs` | `30000` | wait for the token, negotiate, the transport and the handshake |
+| `subscribeTimeoutMs` | `10000` | wait for the hub to accept a subscribe |
+| `publishTimeoutMs` | `10000` | wait for the hub to accept a publish |
+| `keepAliveIntervalMs` | `15000` | ping the hub after this long without sending |
+| `serverTimeoutMs` | `30000` | close when the hub is silent longer than this |
+
+Every other option of the SDK's `withUrl()` (`skipNegotiation`, `headers`, `httpClient`, `timeout`, …) is passed through as it is.
+
+The SDK does the protocol work: negotiate, Azure SignalR Service redirects, transport fallback, the JSON hub protocol. Its own automatic reconnect stays off, because the core reconnects, joins the channels again and tells you when you may have missed events, the same way for every transport. When the hub closes the connection with an error and no permission to come back, the client stops instead of reconnecting.
 
 ## Client options
 

@@ -48,7 +48,7 @@ interface AdapterConnection {
 7. **Auth is fetched per operation.** If the transport authenticates on connect and again per subscribe (as AppSync does), call the user's token provider each time; that is how refreshed tokens propagate. Wrap provider failures in `RealtimeError('…', 'AUTH_ERROR', cause)`.
 8. **Settle in-flight operations when the connection closes.** Reject pending `subscribe()` and `publish()` calls with `CONNECTION_CLOSED`, and check the connection again after every `await` (a token fetch, for example): an operation must never start on a closed socket, nor wait for its timeout to find out.
 9. **No timers left behind.** Clear every timeout in your close path. The test suite runs with fake timers and will hang on leaks.
-10. **No dependencies.** The package ships with zero runtime dependencies. Wrapping an official SDK (Ably, Centrifugo, Socket.IO) is welcome, but the SDK must be an **optional peer dependency** imported only inside that adapter's entry point.
+10. **No dependencies.** The package ships with zero runtime dependencies. Wrapping an official SDK (Ably, Centrifugo, Socket.IO) is welcome, but the SDK must be an **optional peer dependency** imported only inside that adapter's entry point. The SignalR adapter does this with `@microsoft/signalr`: [src/signalr](../src/signalr) shows how to turn the SDK's own reconnect off and map its errors to the core's codes.
 11. **Structural types for platform objects.** Do not import DOM or Node types into the public surface; accept a `WebSocket`/`EventSource` constructor via options with a structural type, like the AppSync adapter's `WebSocketLike`.
 
 ## Skeleton: plain WebSocket with a JSON envelope

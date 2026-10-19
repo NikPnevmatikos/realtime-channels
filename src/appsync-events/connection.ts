@@ -1,5 +1,6 @@
 import { RealtimeError } from '../core/errors';
 import type { AdapterConnectHandlers, AdapterConnection, AdapterSubscription } from '../core/types';
+import { withTimeout } from '../shared/timeout';
 import type { AppSyncAuth } from './auth';
 import { base64UrlEncode, randomId } from './encoding';
 
@@ -109,23 +110,6 @@ async function authorization(cfg: ResolvedConfig): Promise<Record<string, string
 
 function authTimeout(ms: number): RealtimeError {
   return new RealtimeError(`AppSync auth provider did not answer within ${ms} ms`, 'AUTH_ERROR');
-}
-
-/** Rejects with `onTimeout()` when `promise` has not settled after `ms`. */
-function withTimeout<T>(promise: Promise<T>, ms: number, onTimeout: () => RealtimeError): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => reject(onTimeout()), ms);
-    promise.then(
-      (value) => {
-        clearTimeout(timer);
-        resolve(value);
-      },
-      (err: unknown) => {
-        clearTimeout(timer);
-        reject(err);
-      },
-    );
-  });
 }
 
 /**

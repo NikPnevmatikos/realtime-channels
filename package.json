@@ -1,7 +1,7 @@
 {
   "name": "realtime-channels",
   "version": "0.2.0",
-  "description": "Tiny, dependency-free realtime channel client with pluggable transports. Ships an AWS AppSync Events adapter that runs unchanged in browsers, React Native (including Expo Go) and Node.",
+  "description": "Tiny realtime channel client with pluggable transports: one API for subscribing, publishing and reconnecting. Ships a zero-dependency AWS AppSync Events adapter and an ASP.NET Core SignalR adapter built on the official @microsoft/signalr client; runs in browsers, React Native (including Expo Go) and Node.",
   "license": "MIT",
   "author": "Nikos Pnevmatikos",
   "repository": {
@@ -17,6 +17,9 @@
     "channels",
     "appsync",
     "appsync-events",
+    "signalr",
+    "aspnetcore",
+    "azure-signalr",
     "aws",
     "react",
     "react-native",
@@ -48,6 +51,16 @@
         "default": "./dist/appsync-events.cjs"
       }
     },
+    "./signalr": {
+      "import": {
+        "types": "./dist/signalr.d.ts",
+        "default": "./dist/signalr.js"
+      },
+      "require": {
+        "types": "./dist/signalr.d.cts",
+        "default": "./dist/signalr.cjs"
+      }
+    },
     "./react": {
       "import": {
         "types": "./dist/react.d.ts",
@@ -75,14 +88,19 @@
     "prepublishOnly": "npm run check"
   },
   "peerDependencies": {
+    "@microsoft/signalr": ">=8.0.0",
     "react": ">=18"
   },
   "peerDependenciesMeta": {
+    "@microsoft/signalr": {
+      "optional": true
+    },
     "react": {
       "optional": true
     }
   },
   "devDependencies": {
+    "@microsoft/signalr": "^10.0.11",
     "@types/node": "^22.0.0",
     "@types/react": "^19.0.0",
     "@types/react-dom": "^19.3.0",
