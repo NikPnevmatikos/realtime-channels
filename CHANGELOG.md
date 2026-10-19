@@ -5,6 +5,8 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-19
+
 ### Added
 
 - SignalR adapter (`realtime-channels/signalr`) for ASP.NET Core SignalR hubs and Azure SignalR Service, built on the official `@microsoft/signalr` client (8.0 or later, an optional peer dependency installed by those who use the adapter). Channels map to hub groups through `Subscribe` / `Unsubscribe` / `Event` (names configurable), publishing goes through `Publish`. The SDK's options (transports with fallback, `withCredentials`, `headers`, `logger`, …) are passed through; its own reconnect stays off so the core reconnects and resubscribes as with every transport, and a `Close` that refuses the client stops it. See [docs/adapters/signalr.md](./docs/adapters/signalr.md).
@@ -46,6 +48,7 @@ The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and 
 - Browser bundle (`dist/realtime-channels.appsync.global.js`) and examples for the browser and Expo.
 - Test suite against an in-memory AppSync protocol fake.
 
-[Unreleased]: https://github.com/NikPnevmatikos/realtime-channels/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/NikPnevmatikos/realtime-channels/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/NikPnevmatikos/realtime-channels/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/NikPnevmatikos/realtime-channels/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/NikPnevmatikos/realtime-channels/releases/tag/v0.1.0

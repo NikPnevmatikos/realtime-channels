@@ -1,6 +1,6 @@
 {
   "name": "realtime-channels",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Tiny realtime channel client with pluggable transports: one API for subscribing, publishing and reconnecting. Ships a zero-dependency AWS AppSync Events adapter and an ASP.NET Core SignalR adapter built on the official @microsoft/signalr client; runs in browsers, React Native (including Expo Go) and Node.",
   "license": "MIT",
   "author": "Nikos Pnevmatikos",
